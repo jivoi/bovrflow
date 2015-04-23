@@ -1,0 +1,8 @@
+ESP 
+is the Extended Stack Pointer and this register purpose is to let you know where on the stack you are, it means that the ESP always mark the top of the stack
+
+EBP 
+is the Extended Base Stack Pointer and its purpose is to point to the base address of the stack.
+
+EIP
+is the Extended Instruction Pointer it is a read-only register and it contains the address of the next instruction to read on the program, point always to the “Program Code” memory segment.
